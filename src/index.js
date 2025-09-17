@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import http from 'http';
 import cors from 'cors';
 import morgan from 'morgan';
@@ -82,11 +82,8 @@ app.use((err, req, res, next) => {
   if (err?.message === 'Not allowed by CORS') {
     return res.status(403).json({ error: 'CORS origin denied' });
   }
-  if (err) {
-    console.error('Unhandled error', err);
-    return res.status(500).json({ error: 'internal server error' });
-  }
-  return next();
+  console.error('Unhandled error', err);
+  return res.status(500).json({ error: 'internal server error' });
 });
 
 // Socket.IO demo stream
