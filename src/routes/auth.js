@@ -2,6 +2,7 @@
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import User from '../models/User.js';
 import { sendOtpSms } from '../services/sms.js';
 import { auth, admin } from '../middleware/auth.js';
@@ -9,6 +10,45 @@ import { auth, admin } from '../middleware/auth.js';
 const router = express.Router();
 
 const requestLimiter = rateLimit({ windowMs: 60 * 1000, max: 5 });
+
+const ACCESS_TOKEN_TTL_SEC = parseInt(process.env.ACCESS_TOKEN_TTL_SEC || '3600', 10); // 1 hour default
+const REFRESH_TOKEN_TTL_SEC = parseInt(process.env.REFRESH_TOKEN_TTL_SEC || String(3 * 24 * 60 * 60), 10); // 3 days default
+const REFRESH_TOKEN_BCRYPT_ROUNDS = parseInt(process.env.REFRESH_TOKEN_BCRYPT_ROUNDS || '12', 10);
+
+function buildUserPayload(user) {
+  return {
+    id: user._id,
+    phone: user.phone,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    walletBalance: user.walletBalance,
+  };
+}
+
+function signAccessToken(user) {
+  const expiresAt = new Date(Date.now() + ACCESS_TOKEN_TTL_SEC * 1000);
+  const token = jwt.sign(
+    { id: user._id.toString(), role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: ACCESS_TOKEN_TTL_SEC }
+  );
+  return { token, expiresAt };
+}
+
+async function attachRefreshToken(user) {
+  const raw = crypto.randomBytes(48).toString('hex');
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_TTL_SEC * 1000);
+  user.refreshTokenHash = await bcrypt.hash(raw, REFRESH_TOKEN_BCRYPT_ROUNDS);
+  user.refreshTokenExpiresAt = expiresAt;
+  return { refreshToken: `${user._id.toString()}.${raw}`, expiresAt };
+}
+
+async function issueAuthTokens(user) {
+  const { token, expiresAt: tokenExpiresAt } = signAccessToken(user);
+  const { refreshToken, expiresAt: refreshTokenExpiresAt } = await attachRefreshToken(user);
+  return { token, tokenExpiresAt, refreshToken, refreshTokenExpiresAt };
+}
 
 function genOtp() {
   return String(Math.floor(100000 + Math.random() * 900000));
@@ -182,24 +222,16 @@ router.post(['/verify-otp', '/verifyOtp'], async (req, res) => {
     user.lastLoginAt = new Date();
     user.lastLoginIp = req.ip;
     user.loginCount = (user.loginCount || 0) + 1;
+
+    const tokens = await issueAuthTokens(user);
     await user.save();
 
-    const token = jwt.sign(
-      { id: user._id.toString(), role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
     return res.json({
-      token,
-      user: {
-        id: user._id,
-        phone: user.phone,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        walletBalance: user.walletBalance
-      }
+      token: tokens.token,
+      tokenExpiresAt: tokens.tokenExpiresAt,
+      refreshToken: tokens.refreshToken,
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      user: buildUserPayload(user),
     });
   } catch (e) {
     console.error(e);
@@ -240,30 +272,68 @@ router.post(['/admin/verify-otp', '/admin/verifyOtp'], async (req, res) => {
     user.lastLoginAt = new Date();
     user.lastLoginIp = req.ip;
     user.loginCount = (user.loginCount || 0) + 1;
+
+    const tokens = await issueAuthTokens(user);
     await user.save();
 
-    const token = jwt.sign(
-      { id: user._id.toString(), role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
     return res.json({
-      token,
-      user: {
-        id: user._id,
-        phone: user.phone,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        walletBalance: user.walletBalance
-      }
+      token: tokens.token,
+      tokenExpiresAt: tokens.tokenExpiresAt,
+      refreshToken: tokens.refreshToken,
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      user: buildUserPayload(user),
     });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: 'server error' });
   }
 });
+
+router.post('/refresh-token', async (req, res) => {
+  try {
+    const provided = req.body?.refreshToken;
+    if (typeof provided !== 'string' || !provided.length) {
+      return res.status(400).json({ error: 'refreshToken required' });
+    }
+
+    const [userId, raw] = provided.split('.');
+    if (!userId || !raw) {
+      return res.status(400).json({ error: 'invalid refresh token' });
+    }
+
+    const user = await User.findById(userId);
+    if (!user || !user.refreshTokenHash || !user.refreshTokenExpiresAt) {
+      return res.status(401).json({ error: 'invalid refresh token' });
+    }
+
+    if (user.refreshTokenExpiresAt.getTime() < Date.now()) {
+      user.refreshTokenHash = undefined;
+      user.refreshTokenExpiresAt = undefined;
+      await user.save();
+      return res.status(401).json({ error: 'refresh token expired' });
+    }
+
+    const ok = await bcrypt.compare(raw, user.refreshTokenHash);
+    if (!ok) {
+      return res.status(401).json({ error: 'invalid refresh token' });
+    }
+
+    const tokens = await issueAuthTokens(user);
+    await user.save();
+
+    return res.json({
+      token: tokens.token,
+      tokenExpiresAt: tokens.tokenExpiresAt,
+      refreshToken: tokens.refreshToken,
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+      user: buildUserPayload(user),
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
 
 // Admin self info
 router.get('/admin/me', auth, admin, async (req, res) => {

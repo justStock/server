@@ -24,6 +24,10 @@ const UserSchema = new mongoose.Schema(
     lastLoginIp: { type: String },
     lastOtpAt: { type: Date },
     lastOtpIp: { type: String },
+
+    // Refresh token (sliding session)
+    refreshTokenHash: { type: String },
+    refreshTokenExpiresAt: { type: Date },
   },
   { timestamps: true }
 );
