@@ -1,5 +1,6 @@
 import express from 'express';
 import SegmentMessage, { SEGMENT_KEYS, normalizeSegmentKey } from '../models/SegmentMessage.js';
+import SegmentMessageHistory from '../models/SegmentMessageHistory.js';
 import { auth, admin } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -44,6 +45,32 @@ router.get('/', async (req, res) => {
   }
 });
 
+router.get('/:segment/history', async (req, res) => {
+  try {
+    const key = normalizeSegmentKey(req.params.segment);
+    if (!key) return res.status(404).json({ error: 'segment not found' });
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const history = await SegmentMessageHistory.find({ segment: key })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    return res.json({
+      segment: key,
+      entries: history.map((entry) => ({
+        id: entry._id,
+        message: entry.message,
+        updatedBy: entry.updatedBy ? String(entry.updatedBy) : null,
+        createdAt: entry.createdAt,
+      })),
+    });
+  } catch (err) {
+    console.error('Failed to fetch segment history', err);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
 router.get('/:segment', async (req, res) => {
   try {
     const key = normalizeSegmentKey(req.params.segment);
@@ -56,7 +83,7 @@ router.get('/:segment', async (req, res) => {
   }
 });
 
-router.put('/:segment', auth, admin, async (req, res) => {
+router.post('/:segment', auth, admin, async (req, res) => {
   try {
     const key = normalizeSegmentKey(req.params.segment);
     if (!key) return res.status(404).json({ error: 'segment not found' });
@@ -76,6 +103,12 @@ router.put('/:segment', auth, admin, async (req, res) => {
       { segment: key, message: trimmed, updatedBy: req.user?.id || null },
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
+
+    await SegmentMessageHistory.create({
+      segment: key,
+      message: trimmed,
+      updatedBy: req.user?.id || null,
+    });
 
     const response = serializeSegment(updated);
 
