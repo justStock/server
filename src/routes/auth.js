@@ -1,5 +1,4 @@
-// routes/auth.js
-import express from 'express';
+﻿import express from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
@@ -19,17 +18,36 @@ function genOtp() {
 function normalizeE164Loose(input = '') {
   const s = String(input).trim();
   const kept = s.replace(/[^\d+]/g, '');
-  // If it starts with 0 or doesn’t include country code, you may add your own logic.
+  // If it starts with 0 or doesn't include country code, you may add your own logic.
   return kept;
 }
 
 function isValidPhoneLoose(p) {
-  // Accepts + and 8–15 digits overall (rough E.164 bounds)
+  // Accepts + and 8-15 digits overall (rough E.164 bounds)
   return /^\+?[1-9]\d{7,14}$/.test(p);
 }
 
 function isValidName(n) {
   return typeof n === 'string' && n.trim().length >= 2 && n.trim().length <= 100;
+}
+
+const adminOtpAllowedPhones = String(process.env.ADMIN_OTP_ALLOWED_PHONES || '')
+  .split(',')
+  .map((value) => normalizeE164Loose(value))
+  .filter((value) => isValidPhoneLoose(value));
+
+const adminOtpAllowedSet = new Set(adminOtpAllowedPhones);
+const restrictAdminOtp = adminOtpAllowedSet.size > 0;
+
+function isAdminPhoneAllowed(phone) {
+  if (!restrictAdminOtp) return true;
+  return adminOtpAllowedSet.has(phone);
+}
+
+function getAdminOtpExpiryMinutes() {
+  const raw = process.env.ADMIN_OTP_EXP_MIN || process.env.OTP_EXP_MIN || '10';
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10;
 }
 
 // Accept both /request-otp and /requestOtp
@@ -54,7 +72,7 @@ router.post(['/request-otp', '/requestOtp'], requestLimiter, async (req, res) =>
     if (!user) {
       user = await User.create({ phone: phoneStr, name });
     } else {
-      // If user exists, update name (you can restrict this if you don’t want name changes here)
+      // If user exists, update name (you can restrict this if you don't want name changes here)
       user.name = name;
     }
 
@@ -77,6 +95,56 @@ router.post(['/request-otp', '/requestOtp'], requestLimiter, async (req, res) =>
     if (!sent) {
       // Dev fallback
       console.log(`[OTP][DEV] Phone=${phoneStr} Code=${otp}`);
+    }
+
+    return res.json({ ok: true, message: 'OTP sent' });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Admin: request OTP via phone + name
+router.post(['/admin/request-otp', '/admin/requestOtp'], requestLimiter, async (req, res) => {
+  try {
+    const rawPhone = req.body?.phone ?? '';
+    const rawName = req.body?.name ?? '';
+    const phoneStr = normalizeE164Loose(rawPhone);
+    const name = String(rawName).trim();
+
+    if (!isValidName(name)) {
+      return res.status(400).json({ error: 'valid name (2-100 chars) required' });
+    }
+    if (!isValidPhoneLoose(phoneStr)) {
+      return res.status(400).json({ error: 'valid phone required (E.164, e.g., +9198xxxxxx)' });
+    }
+    if (!isAdminPhoneAllowed(phoneStr)) {
+      return res.status(403).json({ error: 'phone not authorized for admin access' });
+    }
+
+    let user = await User.findOne({ phone: phoneStr });
+    if (!user) {
+      user = await User.create({ phone: phoneStr, name, role: 'admin' });
+    } else {
+      user.name = name;
+      if (user.role !== 'admin') {
+        user.role = 'admin';
+      }
+    }
+
+    const otp = genOtp();
+    const hash = await bcrypt.hash(otp, 10);
+    const expMin = getAdminOtpExpiryMinutes();
+
+    user.otpHash = hash;
+    user.otpExpiresAt = new Date(Date.now() + expMin * 60 * 1000);
+    user.lastOtpAt = new Date();
+    user.lastOtpIp = req.ip;
+    await user.save();
+
+    const sent = await sendOtpSms(phoneStr, otp);
+    if (!sent) {
+      console.log(`[ADMIN OTP][DEV] Phone=${phoneStr} Code=${otp}`);
     }
 
     return res.json({ ok: true, message: 'OTP sent' });
@@ -111,6 +179,64 @@ router.post(['/verify-otp', '/verifyOtp'], async (req, res) => {
     // Clear OTP state and finalize login
     user.otpHash = undefined;
     user.otpExpiresAt = undefined;
+    user.lastLoginAt = new Date();
+    user.lastLoginIp = req.ip;
+    user.loginCount = (user.loginCount || 0) + 1;
+    await user.save();
+
+    const token = jwt.sign(
+      { id: user._id.toString(), role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    return res.json({
+      token,
+      user: {
+        id: user._id,
+        phone: user.phone,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        walletBalance: user.walletBalance
+      }
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'server error' });
+  }
+});
+
+// Admin: verify OTP
+router.post(['/admin/verify-otp', '/admin/verifyOtp'], async (req, res) => {
+  try {
+    const phoneStr = normalizeE164Loose(req.body?.phone ?? '');
+    const otpStr = String(req.body?.otp ?? '').trim();
+
+    if (!isValidPhoneLoose(phoneStr) || !otpStr) {
+      return res.status(400).json({ error: 'phone and otp required' });
+    }
+    if (!isAdminPhoneAllowed(phoneStr)) {
+      return res.status(403).json({ error: 'phone not authorized for admin access' });
+    }
+
+    const user = await User.findOne({ phone: phoneStr });
+    if (!user || !user.otpHash || !user.otpExpiresAt) {
+      return res.status(400).json({ error: 'invalid request' });
+    }
+    if (user.role !== 'admin') {
+      return res.status(403).json({ error: 'not an admin account' });
+    }
+    if (user.otpExpiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ error: 'otp expired' });
+    }
+
+    const ok = await bcrypt.compare(otpStr, user.otpHash);
+    if (!ok) return res.status(400).json({ error: 'invalid otp' });
+
+    user.otpHash = undefined;
+    user.otpExpiresAt = undefined;
+    user.role = 'admin';
     user.lastLoginAt = new Date();
     user.lastLoginIp = req.ip;
     user.loginCount = (user.loginCount || 0) + 1;

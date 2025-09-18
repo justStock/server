@@ -1,4 +1,4 @@
-# Trade Advice Backend
+﻿# Trade Advice Backend
 
 Node.js/Express API with MongoDB, JWT auth, wallet tracking, and Socket.IO streaming. The backend now exposes production-safe defaults for Render and is ready for a Flutter client (mobile or web).
 
@@ -21,6 +21,8 @@ Copy `.env.example` to `.env` and fill in the values:
 | MONGODB_URI | MongoDB connection string. |
 | JWT_SECRET | Secret used to sign access tokens. |
 | OTP_EXP_MIN | Minutes before OTP expires. |
+| ADMIN_OTP_EXP_MIN | Override admin OTP expiry minutes (defaults to `OTP_EXP_MIN`). |
+| ADMIN_OTP_ALLOWED_PHONES | Optional comma-separated allowlist of admin phones (E.164, e.g. `+911234567890`). |
 | ADMIN_SIGNUP_TOKEN | Bootstrap token for admin registration endpoint. |
 | MONGOOSE_DEBUG | Set to `1` to enable query logging. |
 | TWILIO_* | Twilio credentials for real SMS sending. Leave blank to log codes locally. |
@@ -36,7 +38,8 @@ Key endpoints:
 - `GET /` simple status payload for uptime checks.
 - `GET /api/health` Render health check target.
 - `POST /api/auth/request-otp` and `POST /api/auth/verify-otp` phone login flow.
-- `POST /api/auth/admin/*` admin bootstrap/login.
+- `POST /api/auth/admin/request-otp` and `POST /api/auth/admin/verify-otp` phone OTP auth for admins.
+- `POST /api/auth/admin/login` email/password login for legacy admins.
 - `GET /api/advice/latest`, `POST /api/advice`, `POST /api/advice/:id/unlock` advice lifecycle.
 - `GET /api/wallet` wallet summary.
 - Socket.IO emits `market:tick` demo events on the same origin.
