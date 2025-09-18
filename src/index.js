@@ -11,6 +11,7 @@ import { connectDB } from './config/db.js';
 import authRoutes from './routes/auth.js';
 import adviceRoutes from './routes/advice.js';
 import walletRoutes from './routes/wallet.js';
+import segmentRoutes from './routes/segments.js';
 
 dotenv.config();
 
@@ -77,6 +78,7 @@ app.get('/api/health', (req, res) => res.json({ ok: true }));
 app.use('/api/auth', authRoutes);
 app.use('/api/advice', adviceRoutes);
 app.use('/api/wallet', walletRoutes);
+app.use('/api/segments', segmentRoutes);
 
 app.use((err, req, res, next) => {
   if (err?.message === 'Not allowed by CORS') {
