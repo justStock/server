@@ -23,6 +23,15 @@ function getRazorpay() {
   return razorpayInstance;
 }
 
+// Razorpay requires receipt length <= 40 chars. Build a compact one.
+function buildShortReceipt(userId) {
+  const uid = String(userId || '').slice(-8); // last 8 chars of ObjectId
+  const ts = Date.now().toString(36); // compact timestamp
+  const rand = crypto.randomBytes(3).toString('hex'); // 6 hex chars
+  const receipt = `tu_${uid}_${ts}_${rand}`;
+  return receipt.slice(0, 40);
+}
+
 // Helper to ensure wallet exists
 async function ensureWallet(userId, session) {
   const opts = session ? { upsert: true, new: true, setDefaultsOnInsert: true, session } : { upsert: true, new: true, setDefaultsOnInsert: true };
@@ -60,7 +69,7 @@ router.post('/topups/create-order', async (req, res) => {
     const order = await rzp.orders.create({
       amount,
       currency: 'INR',
-      receipt: `topup_${userId}_${Date.now()}`,
+      receipt: buildShortReceipt(userId),
       notes: { userId: String(userId) },
     });
 
@@ -72,6 +81,11 @@ router.post('/topups/create-order', async (req, res) => {
     });
   } catch (e) {
     console.error('create-order error', e);
+    if (process.env.NODE_ENV !== 'production') {
+      const code = e?.error?.code || e?.code;
+      const description = e?.error?.description || e?.message;
+      return res.status(500).json({ error: 'failed_to_create_order', code, description });
+    }
     return res.status(500).json({ error: 'failed_to_create_order' });
   }
 });

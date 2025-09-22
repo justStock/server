@@ -176,10 +176,16 @@ function gracefulShutdown(signal) {
       console.error('Error closing HTTP server', serverErr);
       process.exit(1);
     }
-    mongoose.connection.close(false, () => {
-      console.log('MongoDB connection closed. Bye!');
-      process.exit(0);
-    });
+    mongoose.connection
+      .close(false)
+      .then(() => {
+        console.log('MongoDB connection closed. Bye!');
+        process.exit(0);
+      })
+      .catch((err) => {
+        console.error('Error closing MongoDB connection', err);
+        process.exit(1);
+      });
   });
 }
 
