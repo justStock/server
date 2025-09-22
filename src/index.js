@@ -6,12 +6,18 @@ import rateLimit from 'express-rate-limit';
 import { Server } from 'socket.io';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import bodyParser from 'body-parser';
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 
 import { connectDB } from './config/db.js';
 import authRoutes from './routes/auth.js';
 import adviceRoutes from './routes/advice.js';
-import walletRoutes from './routes/wallet.js';
+import walletRoutes from './routes/wallet.v2.js';
 import segmentRoutes from './routes/segments.js';
+import User from './models/User.js';
+import Wallet from './models/Wallet.js';
+import WalletLedger from './models/WalletLedger.js';
 
 dotenv.config();
 
@@ -58,6 +64,55 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
+// Razorpay webhook must read raw body before JSON parser
+app.post('/api/webhooks/razorpay', bodyParser.raw({ type: '*/*' }), async (req, res) => {
+  try {
+    const signature = req.headers['x-razorpay-signature'];
+    if (!signature) return res.status(400).json({ error: 'missing_signature' });
+
+    const secret = process.env.WEBHOOK_SECRET || '';
+    const computed = crypto.createHmac('sha256', secret).update(req.body).digest('base64');
+    if (computed !== signature) {
+      return res.status(400).json({ error: 'invalid_signature' });
+    }
+
+    const evt = JSON.parse(req.body.toString('utf8'));
+    if (evt?.event === 'payment.captured') {
+      const payment = evt?.payload?.payment?.entity || {};
+      const paymentId = payment.id;
+      const amount = Number(payment.amount);
+      const userId = payment?.notes?.userId;
+
+      if (paymentId && Number.isFinite(amount) && amount > 0 && userId) {
+        const exists = await WalletLedger.findOne({ extRef: paymentId }).lean();
+        if (!exists) {
+          const session = await mongoose.startSession();
+          try {
+            await session.withTransaction(async () => {
+              const wallet = await Wallet.findOneAndUpdate(
+                { userId },
+                { $setOnInsert: { balance: 0 } },
+                { upsert: true, new: true, setDefaultsOnInsert: true, session }
+              );
+
+              await Wallet.updateOne({ _id: wallet._id }, { $inc: { balance: amount } }, { session });
+              await WalletLedger.create([
+                { walletId: wallet._id, type: 'TOPUP', amount, note: 'Razorpay top-up (webhook)', extRef: paymentId },
+              ], { session });
+            });
+          } finally {
+            session.endSession();
+          }
+        }
+      }
+    }
+
+    return res.json({ received: true });
+  } catch (e) {
+    console.error('webhook error', e);
+    return res.status(500).json({ error: 'webhook_error' });
+  }
+});
 app.use(express.json({ limit: '1mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
@@ -75,6 +130,24 @@ app.use(
 // Routes
 app.get('/', (req, res) => res.json({ ok: true, service: 'trade-advice-api', uptime: process.uptime() }));
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+// Debug login for quick testing (JWT valid 7d)
+app.post('/api/debug/login', async (req, res) => {
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    if (!phone) return res.status(400).json({ error: 'phone required' });
+    const upsert = await User.findOneAndUpdate(
+      { phone },
+      { $setOnInsert: { phone } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    const payload = { sub: upsert._id.toString(), phone };
+    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
+    return res.json({ token });
+  } catch (e) {
+    console.error('debug/login error', e);
+    return res.status(500).json({ error: 'server_error' });
+  }
+});
 app.use('/api/auth', authRoutes);
 app.use('/api/advice', adviceRoutes);
 app.use('/api/wallet', walletRoutes);
