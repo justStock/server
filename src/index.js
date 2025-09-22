@@ -7,7 +7,6 @@ import { Server } from 'socket.io';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import bodyParser from 'body-parser';
-import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
 import { connectDB } from './config/db.js';
@@ -15,23 +14,25 @@ import authRoutes from './routes/auth.js';
 import adviceRoutes from './routes/advice.js';
 import walletRoutes from './routes/wallet.v2.js';
 import segmentRoutes from './routes/segments.js';
-import User from './models/User.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
 
 dotenv.config();
 
 function parseOrigins(value) {
-  return String(value || '')
+  const list = String(value || '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
+  // Treat '*' specially as allow-all
+  if (list.includes('*')) return ['*'];
+  return list;
 }
 
 const httpOrigins = parseOrigins(process.env.CORS_ALLOWED_ORIGINS);
 const socketOrigins = parseOrigins(process.env.SOCKET_ALLOWED_ORIGINS);
-const corsAllowAll = httpOrigins.length === 0;
-const effectiveSocketOrigins = socketOrigins.length ? socketOrigins : httpOrigins;
+const corsAllowAll = httpOrigins.length === 0 || httpOrigins[0] === '*';
+const effectiveSocketOrigins = (socketOrigins.length ? socketOrigins : httpOrigins);
 
 const app = express();
 const server = http.createServer(app);
@@ -55,7 +56,8 @@ app.set('trust proxy', 1);
 const corsOptions = {
   origin(origin, callback) {
     if (!origin) return callback(null, true);
-    if (corsAllowAll || httpOrigins.includes(origin)) return callback(null, true);
+    if (corsAllowAll) return callback(null, true);
+    if (httpOrigins.includes(origin)) return callback(null, true);
     console.warn(`Blocked CORS origin: ${origin}`);
     return callback(new Error('Not allowed by CORS'));
   },
@@ -130,24 +132,6 @@ app.use(
 // Routes
 app.get('/', (req, res) => res.json({ ok: true, service: 'trade-advice-api', uptime: process.uptime() }));
 app.get('/api/health', (req, res) => res.json({ ok: true }));
-// Debug login for quick testing (JWT valid 7d)
-app.post('/api/debug/login', async (req, res) => {
-  try {
-    const phone = String(req.body?.phone || '').trim();
-    if (!phone) return res.status(400).json({ error: 'phone required' });
-    const upsert = await User.findOneAndUpdate(
-      { phone },
-      { $setOnInsert: { phone } },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-    const payload = { sub: upsert._id.toString(), phone };
-    const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '7d' });
-    return res.json({ token });
-  } catch (e) {
-    console.error('debug/login error', e);
-    return res.status(500).json({ error: 'server_error' });
-  }
-});
 app.use('/api/auth', authRoutes);
 app.use('/api/advice', adviceRoutes);
 app.use('/api/wallet', walletRoutes);
