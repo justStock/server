@@ -14,6 +14,7 @@ import authRoutes from './routes/auth.js';
 import adviceRoutes from './routes/advice.js';
 import walletRoutes from './routes/wallet.v2.js';
 import segmentRoutes from './routes/segments.js';
+import imageRoutes from './routes/images.js';
 import Wallet from './models/Wallet.js';
 import WalletLedger from './models/WalletLedger.js';
 
@@ -136,6 +137,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/advice', adviceRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/segments', segmentRoutes);
+app.use('/api/images', imageRoutes);
 
 app.use((err, req, res, next) => {
   if (err?.message === 'Not allowed by CORS') {
