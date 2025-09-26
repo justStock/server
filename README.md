@@ -26,6 +26,11 @@ Copy `.env.example` to `.env` and fill in the values:
 | ADMIN_SIGNUP_TOKEN | Bootstrap token for admin registration endpoint. |
 | MONGOOSE_DEBUG | Set to `1` to enable query logging. |
 | TWILIO_* | Twilio credentials for real SMS sending. Leave blank to log codes locally. |
+| CLOUDINARY_URL | Alternative single var: `cloudinary://<api_key>:<api_secret>@<cloud_name>` |
+| CLOUDINARY_CLOUD_NAME | Cloudinary cloud name for uploads. (Used if `CLOUDINARY_URL` not set) |
+| CLOUDINARY_API_KEY | Cloudinary API key. (Used if `CLOUDINARY_URL` not set) |
+| CLOUDINARY_API_SECRET | Cloudinary API secret (server-side signing). (Used if `CLOUDINARY_URL` not set) |
+| CLOUDINARY_UPLOAD_FOLDER | Optional default folder for uploads (e.g. `admin-uploads`). |
 
 ## Local Development
 
@@ -43,6 +48,17 @@ Key endpoints:
 - `GET /api/advice/latest`, `POST /api/advice`, `POST /api/advice/:id/unlock` advice lifecycle.
 - `GET /api/wallet` wallet summary.
 - Socket.IO emits `market:tick` demo events on the same origin.
+
+### Images (Admin uploads to Cloudinary, users list images)
+
+- `POST /api/images/signature` (admin): returns Cloudinary upload signature/params for direct client uploads.
+  - Body: `{ folder?: string, tags?: string[] }`
+  - Response: `{ cloudName, apiKey, timestamp, signature, folder, tags, uploadUrl }`
+- Upload each selected file directly from the client to `uploadUrl` with multipart form fields:
+  - `file` (binary or data URL), `api_key`, `timestamp`, `signature`, and optional `folder`, `tags`.
+- `POST /api/images/batch` (admin): persist uploaded items to DB after successful Cloudinary upload.
+  - Body: `{ items: Array<CloudinaryUploadResult> }` where each item includes `public_id`, `secure_url`, etc.
+- `GET /api/images` (public): returns recent images for the user app: `{ items: [{ id, url, width, height, format, folder, createdAt }] }`.
 
 ## Deploying to Render
 
