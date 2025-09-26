@@ -115,7 +115,8 @@ app.post('/api/webhooks/razorpay', bodyParser.raw({ type: '*/*' }), async (req, 
     return res.status(500).json({ error: 'webhook_error' });
   }
 });
-app.use(express.json({ limit: '1mb' }));
+// Increase JSON limit to allow base64 images for segment uploads
+app.use(express.json({ limit: '10mb' }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
 const rateLimitWindowMs = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10);

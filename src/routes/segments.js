@@ -2,6 +2,7 @@ import express from 'express';
 import SegmentMessage, { SEGMENT_KEYS, normalizeSegmentKey } from '../models/SegmentMessage.js';
 import SegmentMessageHistory from '../models/SegmentMessageHistory.js';
 import { auth, admin } from '../middleware/auth.js';
+import { isCloudinaryConfigured, uploadImage } from '../services/cloudinary.js';
 
 const router = express.Router();
 
@@ -19,6 +20,7 @@ function serializeSegment(doc, fallbackKey) {
       key: fallbackKey,
       label: SEGMENT_METADATA[fallbackKey]?.label || fallbackKey,
       message: '',
+      imageUrl: '',
       updatedAt: null,
       updatedBy: null,
     };
@@ -28,6 +30,7 @@ function serializeSegment(doc, fallbackKey) {
     key: doc.segment,
     label: SEGMENT_METADATA[doc.segment]?.label || doc.segment,
     message: doc.message || '',
+    imageUrl: doc.imageUrl || '',
     updatedAt: doc.updatedAt || null,
     updatedBy: doc.updatedBy ? String(doc.updatedBy) : null,
   };
@@ -88,7 +91,7 @@ router.post('/:segment', auth, admin, async (req, res) => {
     const key = normalizeSegmentKey(req.params.segment);
     if (!key) return res.status(404).json({ error: 'segment not found' });
 
-    const { message } = req.body || {};
+    const { message, imageBase64, imageDataUrl, imageUrl, imageMimeType } = req.body || {};
     if (typeof message !== 'string' || !message.trim()) {
       return res.status(400).json({ error: 'message required' });
     }
@@ -98,9 +101,30 @@ router.post('/:segment', auth, admin, async (req, res) => {
       return res.status(400).json({ error: 'message too long (max 1000 chars)' });
     }
 
+    let uploaded = null;
+    const anyImage = imageDataUrl || imageBase64 || imageUrl;
+    if (anyImage) {
+      if (!isCloudinaryConfigured()) {
+        return res.status(500).json({ error: 'cloudinary not configured' });
+      }
+      try {
+        const file = imageDataUrl || imageUrl || imageBase64; // upload service will coerce base64
+        uploaded = await uploadImage({ file, mimeType: imageMimeType });
+      } catch (e) {
+        console.error('Cloudinary upload failed', e);
+        return res.status(502).json({ error: 'image upload failed' });
+      }
+    }
+
+    const updateDoc = { segment: key, message: trimmed, updatedBy: req.user?.id || null };
+    if (uploaded) {
+      updateDoc.imageUrl = uploaded.url || '';
+      updateDoc.imagePublicId = uploaded.publicId || '';
+    }
+
     const updated = await SegmentMessage.findOneAndUpdate(
       { segment: key },
-      { segment: key, message: trimmed, updatedBy: req.user?.id || null },
+      updateDoc,
       { new: true, upsert: true, setDefaultsOnInsert: true }
     );
 
